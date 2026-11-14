@@ -151,9 +151,12 @@ goBtn.addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: payload,
     });
-    const data = await res.json().catch(() => ({}));
+    const rawText = await res.text();
+    let data = {};
+    try { data = JSON.parse(rawText); } catch {}
     if (!res.ok || !data.ok) {
-      setStatus('Ошибка: ' + (data.error || ('HTTP ' + res.status)), true);
+      const snippet = rawText.replace(/\s+/g, ' ').slice(0, 120);
+      setStatus('Ошибка: HTTP ' + res.status + ' — ' + (data.error || snippet || 'пустой ответ'), true);
     } else {
       setStatus('Готово');
       const labels = { creator: 'creator', gana: 'gana', both: 'оба', unknown: 'никто не распознан' };
@@ -186,7 +189,10 @@ export default {
     // Health check proxied to the service
     if (request.method === 'GET' && url.pathname === '/health') {
       const r = await fetch(upstream + '/health', { cf: { cacheTtl: 0 } });
-      return new Response(r.body, { status: r.status, headers: { 'Content-Type': 'application/json' } });
+      return new Response(r.body, {
+        status: r.status,
+        headers: { 'Content-Type': 'application/json', 'X-Upstream-Status': String(r.status) },
+      });
     }
 
     // Inference proxy: body = raw image bytes
@@ -221,7 +227,10 @@ export default {
         body,
       });
       const respBody = await r.text();
-      return new Response(respBody, { status: r.status, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
+      return new Response(respBody, {
+        status: r.status,
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Upstream-Status': String(r.status) },
+      });
     }
 
     return json({ ok: false, error: 'not found' }, 404);
