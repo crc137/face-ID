@@ -1,6 +1,11 @@
 name = "face-id-ui"
 main = "worker.js"
 compatibility_date = "2026-11-01"
+workers_dev = true
+
+[[routes]]
+pattern = "face-id.coonlink.com"
+custom_domain = true
 
 [vars]
 UPSTREAM_URL = "https://api.coonlink.com/v1/gana/face-id"
