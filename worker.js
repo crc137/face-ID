@@ -220,8 +220,8 @@ export default {
         headers: { 'Content-Type': mime },
         body,
       });
-      const body = await r.text();
-      return new Response(body, { status: r.status, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
+      const respBody = await r.text();
+      return new Response(respBody, { status: r.status, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
     }
 
     return json({ ok: false, error: 'not found' }, 404);
