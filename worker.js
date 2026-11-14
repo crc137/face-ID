@@ -1,3 +1,13 @@
+/**
+ * Cloudflare Worker: face-id UI + proxy to the face-id inference service.
+ *
+ * Routes:
+ *   GET  /          -> HTML page (upload + preview + result)
+ *   GET  /health    -> proxied service health
+ *   POST /infer     -> body = image bytes; forwards to upstream, returns JSON
+ *   anything else   -> 404
+ */
+
 const HTML = `<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -45,10 +55,12 @@ const HTML = `<!DOCTYPE html>
     padding: 14px; font-size: 12.5px; overflow: auto; max-height: 260px; white-space: pre-wrap;
     word-break: break-word;
   }
-  .badge {display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 700;}
+  .badge {
+    display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 700;
+  }
   .badge.creator { background: #1f3a2a; color: #7ee787; }
-  .badge.gana { background: #3a2a1f; color: #ffb86b; }
-  .badge.both { background: #1f2a3a; color: #79c0ff; }
+  .badge.gana    { background: #3a2a1f; color: #ffb86b; }
+  .badge.both    { background: #1f2a3a; color: #79c0ff; }
   .badge.unknown { background: #2a2a2a; color: #9aa4b2; }
 </style>
 </head>
@@ -59,7 +71,7 @@ const HTML = `<!DOCTYPE html>
 
   <label class="drop" id="drop">
     <input type="file" id="file" accept="image/*">
-    <div>Нажмите или перетащите сюда фото<br><small>JPG / PNG / WebP, до 8&nbsp;МБ</small></div>
+    <div>Нажмите или перетащите сюда фото<br><small>JPG / PNG / WebP, до 5.5&nbsp;МБ</small></div>
   </label>
 
   <div class="preview" id="previewWrap">
@@ -92,7 +104,7 @@ let selected = null;
 function pick(f) {
   if (!f) return;
   if (!f.type.startsWith('image/')) { setStatus('Нужен файл изображения', true); return; }
-  if (f.size > 8 * 1024 * 1024) { setStatus('Файл больше 8 МБ', true); return; }
+  if (f.size > 5.5 * 1024 * 1024) { setStatus('Файл больше 5.5 МБ', true); return; }
   selected = f;
   preview.src = URL.createObjectURL(f);
   previewWrap.style.display = 'block';
@@ -123,16 +135,37 @@ goBtn.addEventListener('click', async () => {
   verdictEl.innerHTML = '';
   outEl.style.display = 'none';
   try {
-    const res = await fetch('/infer', {method: 'POST',headers: { 'Content-Type': selected.type || 'image/jpeg' },body: selected});
+    const buf = await selected.arrayBuffer();
+    let bin = '';
+    const bytes = new Uint8Array(buf);
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    const payload = JSON.stringify({
+      mime: selected.type || 'image/jpeg',
+      image_b64: btoa(bin)
+    });
+    const res = await fetch('/infer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) {setStatus('Ошибка: ' + (data.error || ('HTTP ' + res.status)), true);} else {
+    if (!res.ok || !data.ok) {
+      setStatus('Ошибка: ' + (data.error || ('HTTP ' + res.status)), true);
+    } else {
       setStatus('Готово');
       const labels = { creator: 'creator', gana: 'gana', both: 'оба', unknown: 'никто не распознан' };
       verdictEl.innerHTML = '<span class="badge ' + data.who + '">' + (labels[data.who] || data.who) + '</span>';
       outEl.textContent = JSON.stringify(data, null, 2);
       outEl.style.display = 'block';
     }
-  } catch (err) {setStatus('Сетевая ошибка: ' + err.message, true);} finally {goBtn.disabled = false;}
+  } catch (err) {
+    setStatus('Сетевая ошибка: ' + err.message, true);
+  } finally {
+    goBtn.disabled = false;
+  }
 });
 </script>
 </body>
@@ -142,24 +175,62 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const upstream = (env.UPSTREAM_URL || 'https://api.coonlink.com/v1/gana/face-id').replace(/\/$/, '');
-    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {return new Response(HTML, {headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }});}
 
+    // UI
+    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+      return new Response(HTML, {
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    }
+
+    // Health check proxied to the service
     if (request.method === 'GET' && url.pathname === '/health') {
       const r = await fetch(upstream + '/health', { cf: { cacheTtl: 0 } });
       return new Response(r.body, { status: r.status, headers: { 'Content-Type': 'application/json' } });
     }
 
+    // Inference proxy: body = raw image bytes
     if (request.method === 'POST' && (url.pathname === '/infer' || url.pathname === '/')) {
       const len = parseInt(request.headers.get('Content-Length') || '0', 10);
-      if (len > 8 * 1024 * 1024) {return json({ ok: false, error: 'body required (max 8MB)' }, 400);}
-      const qs = url.search;
-      const r = await fetch(upstream + '/' + qs, {method: 'POST',headers: { 'Content-Type': request.headers.get('Content-Type') || 'application/octet-stream' },body: request.body});
+      if (len > 8 * 1024 * 1024) {
+        return json({ ok: false, error: 'body required (max 8MB)' }, 400);
+      }
+      const qs = url.search; // forward ?conf= / ?weights= as-is
+      let body = request.body;
+      let mime = request.headers.get('Content-Type') || 'application/octet-stream';
+
+      const ct = (mime || '').toLowerCase();
+      if (ct.includes('application/json')) {
+        let data;
+        try { data = await request.json(); }
+        catch { return json({ ok: false, error: 'invalid JSON body' }, 400); }
+        const b64 = (data.image_b64 || '').replace(/^data:[^;]+;base64,/, '');
+        if (!b64) return json({ ok: false, error: 'image_b64 required' }, 400);
+        let bin;
+        try { bin = atob(b64); }
+        catch { return json({ ok: false, error: 'invalid base64' }, 400); }
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        body = bytes;
+        mime = data.mime || 'image/jpeg';
+      }
+
+      const r = await fetch(upstream + '/' + qs, {
+        method: 'POST',
+        headers: { 'Content-Type': mime },
+        body,
+      });
       const body = await r.text();
       return new Response(body, { status: r.status, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
     }
 
     return json({ ok: false, error: 'not found' }, 404);
-  }
+  },
 };
 
-function json(obj, status = 200) {return new Response(JSON.stringify(obj), {status,headers: { 'Content-Type': 'application/json; charset=utf-8' }});}
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+  });
+}
