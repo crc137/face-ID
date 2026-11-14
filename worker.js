@@ -19,6 +19,7 @@ const HTML = `<!DOCTYPE html>
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: #8b93a5; font-size: 13px; margin-bottom: 20px; }
   .drop {
+    display: block; width: 100%;
     border: 2px dashed #3a4150; border-radius: 12px; padding: 32px 16px;
     text-align: center; cursor: pointer; transition: .15s; color: #8b93a5;
   }
@@ -61,7 +62,9 @@ const HTML = `<!DOCTYPE html>
     <div>Нажмите или перетащите сюда фото<br><small>JPG / PNG / WebP, до 8&nbsp;МБ</small></div>
   </label>
 
-  <div class="preview" id="previewWrap"><img id="preview" alt="preview"></div>
+  <div class="preview" id="previewWrap">
+    <img id="preview" alt="preview">
+  </div>
 
   <div class="row">
     <button id="go" disabled>Распознать</button>
@@ -156,7 +159,7 @@ export default {
     }
 
     return json({ ok: false, error: 'not found' }, 404);
-  },
+  }
 };
 
 function json(obj, status = 200) {return new Response(JSON.stringify(obj), {status,headers: { 'Content-Type': 'application/json; charset=utf-8' }});}
