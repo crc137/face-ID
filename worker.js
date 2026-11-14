@@ -151,6 +151,12 @@ goBtn.addEventListener('click', async () => {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.hostname.endsWith('.workers.dev')) {
+      const dest = new URL(request.url);
+      dest.protocol = 'https:';
+      dest.host = (env.PUBLIC_HOST || 'face-id.coonlink.com').replace(/^https?:\/\//, '');
+      return Response.redirect(dest.toString(), 302);
+    }
     const upstream = (env.UPSTREAM_URL || 'https://api.coonlink.com/v1/gana/face-id').replace(/\/$/, '');
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {return new Response(HTML, {headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }});}
 
